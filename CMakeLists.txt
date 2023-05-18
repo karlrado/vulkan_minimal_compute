@@ -20,3 +20,6 @@ endif()
 set_target_properties(vulkan_minimal_compute PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 target_link_libraries(vulkan_minimal_compute ${ALL_LIBS} )
+
+add_subdirectory(shaders)
+add_dependencies(vulkan_minimal_compute generate-shaders)
