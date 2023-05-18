@@ -204,12 +204,12 @@ public:
             vkEnumerateInstanceLayerProperties(&layerCount, layerProperties.data());
 
             /*
-            And then we simply check if VK_LAYER_LUNARG_standard_validation is among the supported layers.
+            And then we simply check if VK_LAYER_KHRONOS_validation is among the supported layers.
             */
             bool foundLayer = false;
             for (VkLayerProperties prop : layerProperties) {
                 
-                if (strcmp("VK_LAYER_LUNARG_standard_validation", prop.layerName) == 0) {
+                if (strcmp("VK_LAYER_KHRONOS_validation", prop.layerName) == 0) {
                     foundLayer = true;
                     break;
                 }
@@ -217,9 +217,9 @@ public:
             }
             
             if (!foundLayer) {
-                throw std::runtime_error("Layer VK_LAYER_LUNARG_standard_validation not supported\n");
+                throw std::runtime_error("Layer VK_LAYER_KHRONOS_validation not supported\n");
             }
-            enabledLayers.push_back("VK_LAYER_LUNARG_standard_validation"); // Alright, we can use this layer.
+            enabledLayers.push_back("VK_LAYER_KHRONOS_validation"); // Alright, we can use this layer.
 
             /*
             We need to enable an extension named VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -272,9 +272,9 @@ public:
         createInfo.pApplicationInfo = &applicationInfo;
         
         // Give our desired layers and extensions to vulkan.
-        createInfo.enabledLayerCount = enabledLayers.size();
+        createInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayers.size());
         createInfo.ppEnabledLayerNames = enabledLayers.data();
-        createInfo.enabledExtensionCount = enabledExtensions.size();
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
         createInfo.ppEnabledExtensionNames = enabledExtensions.data();
     
         /*
@@ -409,7 +409,7 @@ public:
         VkPhysicalDeviceFeatures deviceFeatures = {};
 
         deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        deviceCreateInfo.enabledLayerCount = enabledLayers.size();  // need to specify validation layers here as well.
+        deviceCreateInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayers.size());  // need to specify validation layers here as well.
         deviceCreateInfo.ppEnabledLayerNames = enabledLayers.data();
         deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo; // when creating the logical device, we also specify what queues it has.
         deviceCreateInfo.queueCreateInfoCount = 1;

@@ -25,3 +25,6 @@ head.obj
 mask.obj
 venus.obj
 marble.png
+
+.vscode/
+/mandelbrot.png

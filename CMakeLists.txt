@@ -13,6 +13,9 @@ include_directories(${Vulkan_INCLUDE_DIR})
 set(ALL_LIBS  ${Vulkan_LIBRARY} )
 
 add_executable(vulkan_minimal_compute src/main.cpp src/lodepng.cpp)
+if (MSVC)
+    set_source_files_properties(src/lodepng.cpp  PROPERTIES COMPILE_FLAGS "/W1")
+endif()
 
 set_target_properties(vulkan_minimal_compute PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
