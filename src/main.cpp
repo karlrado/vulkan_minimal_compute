@@ -9,6 +9,9 @@
 
 #include "lodepng.h" //Used for png encoding.
 
+#include "renderdoc_app.h"
+#include "windows.h"
+
 const int WIDTH = 3200; // Size of rendered mandelbrot set.
 const int HEIGHT = 2400; // Size of renderered mandelbrot set.
 const int WORKGROUP_SIZE = 32; // Workgroup size in compute shader.
@@ -18,6 +21,32 @@ const bool enableValidationLayers = false;
 #else
 const bool enableValidationLayers = true;
 #endif
+
+RENDERDOC_API_1_0_0* GetRenderDocApi() 
+{ 
+    RENDERDOC_API_1_0_0* rdoc = nullptr; 
+    HMODULE module = GetModuleHandleA("renderdoc.dll"); 
+
+    if (module == NULL) 
+    { 
+        return nullptr; 
+    } 
+
+    pRENDERDOC_GetAPI getApi = nullptr;
+    getApi = (pRENDERDOC_GetAPI)GetProcAddress(module, "RENDERDOC_GetAPI"); 
+
+    if (getApi == nullptr) 
+    {
+        return nullptr;
+    }
+    
+    if (getApi(eRENDERDOC_API_Version_1_0_0, (void**)&rdoc) != 1) 
+    {
+        return nullptr;
+    } 
+
+    return rdoc; 
+}
 
 // Used for validating return values of Vulkan API calls.
 #define VK_CHECK_RESULT(f) 																				\
@@ -120,10 +149,17 @@ private:
     */
     uint32_t queueFamilyIndex;
 
+    RENDERDOC_API_1_0_0* rdoc = nullptr;
 public:
     void run() {
+        rdoc = GetRenderDocApi();
         // Buffer size of the storage buffer that will contain the rendered mandelbrot set.
         bufferSize = sizeof(Pixel) * WIDTH * HEIGHT;
+
+        if (rdoc)
+        {
+            rdoc->StartFrameCapture(nullptr, nullptr); 
+        }
 
         // Initialize vulkan:
         createInstance();
@@ -137,6 +173,12 @@ public:
 
         // Finally, run the recorded command buffer.
         runCommandBuffer();
+
+        if (rdoc)
+        {
+            rdoc->EndFrameCapture(nullptr, nullptr); 
+        }
+
 
         // The former command rendered a mandelbrot set to a buffer.
         // Save that buffer as a png on disk.
