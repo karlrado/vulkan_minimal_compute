@@ -1,8 +1,7 @@
-# From: https://stackoverflow.com/questions/76272417/vulkan-silent-mostly-errors-while-reading-and-writing-from-to-different-mip-l
 #version 450
 
-layout (set = 0, binding = 0, r32f) uniform readonly restrict image2D highLevelTexture;
-layout (set = 0, binding = 1, r32f) uniform writeonly restrict image2D targetTexture;
+layout (set = 0, binding = 0, rgba32f) uniform readonly restrict image2D highLevelTexture;
+layout (set = 0, binding = 1, rgba32f) uniform writeonly restrict image2D targetTexture;
 
 layout (local_size_x = 1, local_size_Y = 1, local_size_z = 1) in; //This is probably bad for performance, but not my problem, right?
 

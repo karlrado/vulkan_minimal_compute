@@ -156,6 +156,13 @@ private:
     VkFormat mipmapImageFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
     VkImage mipmapImage;
     VkDeviceMemory mipmapImageMemory;
+    VkDescriptorSetLayout mipmapDescriptorSetLayout;
+    VkDescriptorPool mipmapDescriptorPool;
+    std::vector<VkDescriptorSet> mipmapDescriptorSets;
+    std::vector<VkImageView> mipmapImageViews;
+    VkPipeline mipmapPipeline;
+    VkPipelineLayout mipmapPipelineLayout;
+    VkShaderModule mipmapComputeShaderModule;
 
 public:
     void run() {
@@ -182,9 +189,16 @@ public:
         // Finally, run the recorded command buffer.
         runCommandBuffer();
 
-        // Mipmap steps
+        // Mipmap steps - copy the storage buffer created by the Mandelbrot shader to an image
         createMipmapImage();
         createCopyCommandBuffer();
+        runCommandBuffer();
+
+        // Mipmap steps - Generate mipmaps in the image with a compute shader
+        createMipmapDescriptorSetLayout();
+        createMipmapDescriptorSets();
+        createMipmapComputePipeline();
+        createMipmapCommandBuffer();
         runCommandBuffer();
 
         if (rdoc)
@@ -820,6 +834,12 @@ public:
         }
 
         // Free mipmap resources
+        vkDestroyShaderModule(device, mipmapComputeShaderModule, NULL);
+        vkDestroyPipeline(device, mipmapPipeline, NULL);
+        vkDestroyPipelineLayout(device, mipmapPipelineLayout, NULL);
+        for (auto &view : mipmapImageViews) { vkDestroyImageView(device, view, NULL); }
+        vkDestroyDescriptorPool(device, mipmapDescriptorPool, NULL);
+        vkDestroyDescriptorSetLayout(device, mipmapDescriptorSetLayout, NULL);
         vkFreeMemory(device, mipmapImageMemory, NULL);
         vkDestroyImage(device, mipmapImage, NULL);
 
@@ -848,7 +868,7 @@ public:
         imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         imageCreateInfo.extent = {WIDTH, HEIGHT, 1};
-        imageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        imageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
         VK_CHECK_RESULT(vkCreateImage(device, &imageCreateInfo, nullptr, &mipmapImage));
 
         VkMemoryRequirements memReqs;
@@ -908,6 +928,177 @@ public:
         bufferCopyRegion.imageExtent.depth = 1;
 
         vkCmdCopyBufferToImage(commandBuffer, buffer, mipmapImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bufferCopyRegion);
+
+        VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer)); // end recording commands.
+    }
+
+    void createMipmapDescriptorSetLayout() {
+        std::vector<VkDescriptorSetLayoutBinding> bindings(2);
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
+        descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        descriptorSetLayoutCreateInfo.bindingCount = 2;
+        descriptorSetLayoutCreateInfo.pBindings = bindings.data(); 
+
+        VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, NULL, &mipmapDescriptorSetLayout));
+    }
+
+    void createMipmapDescriptorSets() {
+        VkDescriptorPoolSize descriptorPoolSize = {};
+        descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        descriptorPoolSize.descriptorCount = 2 * mipLevels;
+
+        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
+        descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        descriptorPoolCreateInfo.maxSets = mipLevels;
+        descriptorPoolCreateInfo.poolSizeCount = 1;
+        descriptorPoolCreateInfo.pPoolSizes = &descriptorPoolSize;
+
+        VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, NULL, &mipmapDescriptorPool));
+
+        VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
+        std::vector<VkDescriptorSetLayout> layouts(mipLevels, mipmapDescriptorSetLayout);
+        descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; 
+        descriptorSetAllocateInfo.descriptorPool = mipmapDescriptorPool;
+        descriptorSetAllocateInfo.descriptorSetCount = mipLevels - 1;
+        descriptorSetAllocateInfo.pSetLayouts = layouts.data();
+
+        mipmapDescriptorSets.resize(mipLevels - 1);
+        VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, mipmapDescriptorSets.data()));
+
+        // Create Image Views for each mipmap level
+        // - These are put into descriptors later on to point into the memory for each mip level in the image
+        mipmapImageViews.resize(mipLevels);
+        for (uint32_t i = 0; i < mipLevels; ++i) {
+            VkImageViewCreateInfo imageViewCreateInfo = {};
+            imageViewCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            imageViewCreateInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            imageViewCreateInfo.image = mipmapImage;
+            imageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            imageViewCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            imageViewCreateInfo.subresourceRange.baseArrayLayer = 0;
+            imageViewCreateInfo.subresourceRange.baseMipLevel = i;
+            imageViewCreateInfo.subresourceRange.layerCount = 1;
+            imageViewCreateInfo.subresourceRange.levelCount = 1;
+            VK_CHECK_RESULT(vkCreateImageView(device, &imageViewCreateInfo, nullptr, &mipmapImageViews[i]));
+        }
+
+        // Fill in the Descriptor sets.
+        // - Each set is intended to be used to compute the n+1 level from level n
+        // - Each set has 2 bindings that point to level n and level n+1
+        std::vector<VkDescriptorImageInfo> descriptorImageInfosSrc;
+        std::vector<VkDescriptorImageInfo> descriptorImageInfosDst;
+        descriptorImageInfosSrc.resize(mipLevels - 1);
+        descriptorImageInfosDst.resize(mipLevels - 1);
+        for (uint32_t i = 0; i < mipLevels - 1; ++i) {
+            descriptorImageInfosSrc[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            descriptorImageInfosSrc[i].imageView = mipmapImageViews[i];
+            descriptorImageInfosSrc[i].sampler = VK_NULL_HANDLE;
+            descriptorImageInfosDst[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            descriptorImageInfosDst[i].imageView = mipmapImageViews[i+1];
+            descriptorImageInfosDst[i].sampler = VK_NULL_HANDLE;
+        }
+
+        std::vector<VkWriteDescriptorSet> writeDescriptorSets;
+        for (uint32_t i = 0; i < mipLevels - 1; ++i) {
+            VkWriteDescriptorSet writeDescriptorSet = {};
+            writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writeDescriptorSet.dstSet = mipmapDescriptorSets[i];
+            writeDescriptorSet.dstBinding = 0;
+            writeDescriptorSet.descriptorCount = 1;
+            writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            writeDescriptorSet.pImageInfo = &descriptorImageInfosSrc[i];
+            writeDescriptorSets.push_back(writeDescriptorSet);
+            writeDescriptorSet.dstBinding = 1;
+            writeDescriptorSet.pImageInfo = &descriptorImageInfosDst[i];
+            writeDescriptorSets.push_back(writeDescriptorSet);
+        }
+
+        vkUpdateDescriptorSets(device, (mipLevels-1)*2, writeDescriptorSets.data(), 0, NULL);
+    }
+
+    void createMipmapComputePipeline() {
+        uint32_t filelength;
+        uint32_t* code = readFile(filelength, "shaders/mipmap.spv");
+        VkShaderModuleCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.pCode = code;
+        createInfo.codeSize = filelength;
+        
+        VK_CHECK_RESULT(vkCreateShaderModule(device, &createInfo, NULL, &mipmapComputeShaderModule));
+        delete[] code;
+
+        VkPipelineShaderStageCreateInfo shaderStageCreateInfo = {};
+        shaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        shaderStageCreateInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        shaderStageCreateInfo.module = mipmapComputeShaderModule;
+        shaderStageCreateInfo.pName = "main";
+
+        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
+        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutCreateInfo.setLayoutCount = 1;
+        pipelineLayoutCreateInfo.pSetLayouts = &mipmapDescriptorSetLayout; 
+        VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, NULL, &mipmapPipelineLayout));
+
+        VkComputePipelineCreateInfo pipelineCreateInfo = {};
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo.stage = shaderStageCreateInfo;
+        pipelineCreateInfo.layout = mipmapPipelineLayout;
+
+        VK_CHECK_RESULT(vkCreateComputePipelines(
+            device, VK_NULL_HANDLE,
+            1, &pipelineCreateInfo,
+            NULL, &mipmapPipeline));
+    }
+
+    void createMipmapCommandBuffer()
+    {
+        VK_CHECK_RESULT(vkResetCommandBuffer(commandBuffer, 0));
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffer, &beginInfo)); // start recording commands.
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mipmapPipeline);
+
+        // Level 0 needs a special barrier since it was copied to from the buffer.
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = mipmapImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        // The rest of the levels were not touched until now, but need to be transitioned to GENERAL
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        uint32_t w = WIDTH, h = HEIGHT;
+        for (uint32_t i = 0; i < mipLevels - 1; ++i) {
+            barrier.subresourceRange.baseMipLevel = i + 1;
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mipmapPipelineLayout, 0, 1, &mipmapDescriptorSets[i], 0, NULL);
+            vkCmdDispatch(commandBuffer, w, h, 1);
+            w /= 2;
+            h /= 2;
+        }
 
         VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer)); // end recording commands.
     }

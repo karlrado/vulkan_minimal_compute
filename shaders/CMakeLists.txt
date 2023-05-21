@@ -12,5 +12,6 @@ macro(build_shader src dst)
 endmacro(build_shader)
 
 build_shader("shader.comp" "comp.spv")
+build_shader("mipmap.comp" "mipmap.spv")
 
 add_custom_target(generate-shaders DEPENDS ${DEPS})
