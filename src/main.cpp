@@ -150,11 +150,19 @@ private:
     uint32_t queueFamilyIndex;
 
     RENDERDOC_API_1_0_0* rdoc = nullptr;
+
+    // Mipmap definitions
+    uint32_t mipLevels;
+    VkFormat mipmapImageFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+    VkImage mipmapImage;
+    VkDeviceMemory mipmapImageMemory;
+
 public:
     void run() {
         rdoc = GetRenderDocApi();
         // Buffer size of the storage buffer that will contain the rendered mandelbrot set.
         bufferSize = sizeof(Pixel) * WIDTH * HEIGHT;
+        mipLevels = (uint32_t)floor(log2(std::max<uint32_t>(WIDTH, HEIGHT)));
 
         if (rdoc)
         {
@@ -174,6 +182,11 @@ public:
         // Finally, run the recorded command buffer.
         runCommandBuffer();
 
+        // Mipmap steps
+        createMipmapImage();
+        createCopyCommandBuffer();
+        runCommandBuffer();
+
         if (rdoc)
         {
             rdoc->EndFrameCapture(nullptr, nullptr); 
@@ -182,7 +195,8 @@ public:
 
         // The former command rendered a mandelbrot set to a buffer.
         // Save that buffer as a png on disk.
-        saveRenderedImage();
+        // Disable for now because this takes a lot of time.
+        // saveRenderedImage();
 
         // Clean up all vulkan resources.
         cleanup();
@@ -490,7 +504,7 @@ public:
         VkBufferCreateInfo bufferCreateInfo = {};
         bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferCreateInfo.size = bufferSize; // buffer size in bytes. 
-        bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // buffer is used as a storage buffer.
+        bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT ; // buffer is used as a storage buffer and as a source for copy to image
         bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // buffer is exclusive to a single queue family at a time. 
 
         VK_CHECK_RESULT(vkCreateBuffer(device, &bufferCreateInfo, NULL, &buffer)); // create buffer.
@@ -712,7 +726,7 @@ public:
         */
         VkCommandPoolCreateInfo commandPoolCreateInfo = {};
         commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        commandPoolCreateInfo.flags = 0;
+        commandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;  // Reuse command buffer for mipmap steps
         // the queue family of this command pool. All command buffers allocated from this command pool,
         // must be submitted to queues of this family ONLY. 
         commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndex;
@@ -736,7 +750,6 @@ public:
         */
         VkCommandBufferBeginInfo beginInfo = {};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // the buffer is only submitted and used once in this application.
         VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffer, &beginInfo)); // start recording commands.
 
         /*
@@ -806,6 +819,10 @@ public:
             func(instance, debugReportCallback, NULL);
         }
 
+        // Free mipmap resources
+        vkFreeMemory(device, mipmapImageMemory, NULL);
+        vkDestroyImage(device, mipmapImage, NULL);
+
         vkFreeMemory(device, bufferMemory, NULL);
         vkDestroyBuffer(device, buffer, NULL);	
         vkDestroyShaderModule(device, computeShaderModule, NULL);
@@ -816,6 +833,83 @@ public:
         vkDestroyCommandPool(device, commandPool, NULL);	
         vkDestroyDevice(device, NULL);
         vkDestroyInstance(instance, NULL);		
+    }
+
+    void createMipmapImage()
+    {
+        VkImageCreateInfo imageCreateInfo{};
+        imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageCreateInfo.format = mipmapImageFormat;
+        imageCreateInfo.mipLevels = mipLevels;
+        imageCreateInfo.arrayLayers = 1;
+        imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageCreateInfo.extent = {WIDTH, HEIGHT, 1};
+        imageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        VK_CHECK_RESULT(vkCreateImage(device, &imageCreateInfo, nullptr, &mipmapImage));
+
+        VkMemoryRequirements memReqs;
+        VkMemoryAllocateInfo memAllocInfo{};
+        vkGetImageMemoryRequirements(device, mipmapImage, &memReqs);
+        memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        memAllocInfo.allocationSize = memReqs.size;
+        memAllocInfo.memoryTypeIndex = findMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_CHECK_RESULT(vkAllocateMemory(device, &memAllocInfo, nullptr, &mipmapImageMemory));
+        VK_CHECK_RESULT(vkBindImageMemory(device, mipmapImage, mipmapImageMemory, 0));
+    }
+
+    // Generate command buffer to copy the buffer to the top level of the mipmap image
+    void createCopyCommandBuffer()
+    {
+        VK_CHECK_RESULT(vkResetCommandBuffer(commandBuffer, 0));
+        VkCommandBufferBeginInfo beginInfo = {};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffer, &beginInfo)); // start recording commands.
+
+        // Need to transition buffer for reading
+        VkBufferMemoryBarrier bufferBarrier{};
+        bufferBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bufferBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bufferBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        bufferBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufferBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bufferBarrier.size = VK_WHOLE_SIZE;
+        bufferBarrier.buffer = buffer;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &bufferBarrier, 0, nullptr);
+
+        // Transition image for writing
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = mipmapImage;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+        // Copy the first mip of the chain, remaining mips will be generated
+        VkBufferImageCopy bufferCopyRegion = {};
+        bufferCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        bufferCopyRegion.imageSubresource.mipLevel = 0;
+        bufferCopyRegion.imageSubresource.baseArrayLayer = 0;
+        bufferCopyRegion.imageSubresource.layerCount = 1;
+        bufferCopyRegion.imageExtent.width = WIDTH;
+        bufferCopyRegion.imageExtent.height = HEIGHT;
+        bufferCopyRegion.imageExtent.depth = 1;
+
+        vkCmdCopyBufferToImage(commandBuffer, buffer, mipmapImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bufferCopyRegion);
+
+        VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer)); // end recording commands.
     }
 };
 
