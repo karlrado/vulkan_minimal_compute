@@ -1098,7 +1098,7 @@ public:
             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
             vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mipmapPipelineLayout, 0, 1, &mipmapDescriptorSets[i], 0, NULL);
-            vkCmdDispatch(commandBuffer, w, h, 1);
+            vkCmdDispatch(commandBuffer, static_cast<uint32_t>(ceil(w / 32.0)), static_cast<uint32_t>(ceil(h / 32.0)), 1);
             w /= 2;
             h /= 2;
         }

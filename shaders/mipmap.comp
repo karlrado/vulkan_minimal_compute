@@ -3,7 +3,7 @@
 layout (set = 0, binding = 0, rgba32f) uniform readonly restrict image2D highLevelTexture;
 layout (set = 0, binding = 1, rgba32f) uniform writeonly restrict image2D targetTexture;
 
-layout (local_size_x = 1, local_size_Y = 1, local_size_z = 1) in;
+layout (local_size_x = 32, local_size_Y = 32, local_size_z = 1) in;
 
 void main() {
     uvec2 coords = gl_GlobalInvocationID.xy * 2;
