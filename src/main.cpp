@@ -1092,7 +1092,7 @@ public:
         // The rest of the levels were not touched until now, but need to be transitioned to GENERAL
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        uint32_t w = WIDTH, h = HEIGHT;
+        uint32_t w = WIDTH/2, h = HEIGHT/2;
         for (uint32_t i = 0; i < mipLevels - 1; ++i) {
             barrier.subresourceRange.baseMipLevel = i + 1;
             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
